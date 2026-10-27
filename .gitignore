@@ -17,6 +17,11 @@ env/
 .coverage
 htmlcov/
 
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
 # IDE and editor settings
 .idea/
 .vscode/
