@@ -1,22 +1,22 @@
-"""Typing speed test GUI application.
+"""Graphical interface for the typing-speed test application.
 
-This module builds the main window for a typing challenge using
-``customtkinter``. It generates a random paragraph, tracks the current word,
-visualizes typing progress, and reports the user's typing speed (WPM) and
-accuracy when the test ends.
+The :class:`Screen` window presents practice text, tracks typing progress,
+manages the countdown, and displays the final speed and accuracy.
 """
+
 import math
+import time
+from tkinter import Event
 
 import customtkinter as ctk
-import time
-from create_text import Paragraph
 
-# Configuration values used across the app.
-SENTENCES_PER_TEXT = 10   # Length of the generated paragraph.
-DEFAULT_MINUTES = 1       # Default test duration.
+from typing_test import TypingTest
+
+# Default and minimum test duration, in minutes.
+DEFAULT_MINUTES = 1
+MIN_MINUTES = 1
 ENTRY_PLACEHOLDER = "Typing The Word Here..."
-MIN_MINUTES = 1   # Shortest test duration allowed.
-WARNING_SECONDS = 10      # Countdown turns red at or below this many seconds.
+WARNING_SECONDS = 10
 WARNING_COLOR = "red"
 
 # Configure the overall appearance of the application.
@@ -36,196 +36,137 @@ class Screen(ctk.CTk):
         """Initialize the app window and all related widgets and state."""
         super().__init__()
 
-        # Track typed words grouped by correctness.
-        self.correct_word_list = []
-        self.wrong_word_list = []
+        # The model owns the paragraph, word progression, and score data.
+        self.typing_test = TypingTest()
+        self.finished = False
 
-        # Generate challenge text and split it into words for comparison.
-        self.paragraph = Paragraph()
-        self.load_new_text()
-        self.finished = False  # True after the test ends, so typing is ignored.
-
-        # Window configuration.
+        # Configure the fixed-size application window.
         self.title("Typing Speed Test")
         self.geometry("800x600")
         self.resizable(False, False)
-        self.word_index = 0
-        # Runtime state for the current test.
-        self.entry_word = None
-        self.current_word = None
-        self.timer = None
-        self.test_minutes = DEFAULT_MINUTES  # Duration chosen for the current test.
-        self.start_time = None  # Set when the first character is typed.
 
-        # Widget setup and runtime state.
+        # Timer state for the current test.
+        self.entry_word = ""
+        self.timer = None
+        self.test_minutes = DEFAULT_MINUTES
+        self.start_time = None
+
+        # Build the interface and highlight the first target word.
         self.create_widgets()
         self.highlight_current_word()
-        # Give keyboard focus to the entry once the window is visible,
-        # so the user can start typing immediately.
+        # Set focus after the window is created so typing can begin immediately.
         self.after(1000, self.entry.focus_set)
 
-    def build_word_positions(self):
-        """Compute the start index of every word in the paragraph once.
-
-        Stores the result in ``self.word_starts``, where ``word_starts[i]`` is the
-        character offset of word ``i`` inside the Textbox. Must be called whenever
-        ``self.list_graph`` changes.
-    """
-        self.word_starts = []
-        position = 0
-        for word in self.list_graph:
-            self.word_starts.append(position)
-            position += len(word) + 1  # +1 for the space that follows the word
-
-    def load_new_text(self):
-        """Generate a fresh paragraph and rebuild the word data from it."""
-        self.text_graph = self.paragraph.create_paragraph(SENTENCES_PER_TEXT)
-        self.list_graph = self.text_graph.split(" ")
-        self.build_word_positions()
-
-
-
-    def calculate_speed(self):
+    def calculate_speed(self) -> None:
         """Finish the test, stop the timer, and show speed and accuracy.
 
         Speed is measured in words per minute using the real elapsed time, since
         the test can end before the timer does (when all words are typed).
         Accuracy is the percentage of correct words among all submitted words.
-
-        Returns:
-            None: Displays the result in the entry field, locks it, and cancels
-            the timer.
         """
         self.finished = True
         elapsed_minutes = (time.monotonic() - self.start_time) / 60
-        elapsed_minutes = max(elapsed_minutes, 1 / 60)  # avoid dividing by zero
-        wpm = len(self.correct_word_list) / elapsed_minutes
-
-        # Accuracy is the share of correct words among all submitted words.
-        total_words = len(self.correct_word_list) + len(self.wrong_word_list)
-        if total_words > 0:
-            accuracy = len(self.correct_word_list) / total_words * 100
-        else:
-            accuracy = 0
+        wpm = self.typing_test.wpm(elapsed_minutes)
+        accuracy = self.typing_test.accuracy()
 
         self.entry.delete(0, "end")
         self.entry.insert(0, f"Speed: {wpm:.0f} wpm | accuracy: {accuracy:.0f}%")
         self.entry.configure(state="disabled")
         self.cancel_timer()
 
-    def highlight_current_word(self):
-        """Highlight the active word, scroll it into view, and return its range."""
-        # Position of the current word inside the paragraph text.
-        start_pos = self.word_starts[self.word_index]
-        end_pos = start_pos + len(self.list_graph[self.word_index])
+    def highlight_current_word(self) -> None:
+        """Highlight the active word in the paragraph and scroll to it."""
+        start_pos = self.typing_test.word_starts[self.typing_test.word_index]
+        word = self.typing_test.current_word
+        end_pos = start_pos + len(word)
 
         self.show_text.tag_remove("background", "1.0", "end")
         self.show_text.tag_add("background", f"1.{start_pos}", f"1.{end_pos}")
         self.show_text.see(f"1.{start_pos}")
-        return start_pos, end_pos
 
-    def highlight_missing_letters(self, word_index, typed_word):
-        """Color the untyped letters of a submitted word red.
+    def highlight_missing_letters(self, word_index: int, typed_word: str) -> None:
+        """Mark omitted letters in a submitted word as incorrect.
 
-        When a word is submitted with fewer letters than the target word, the
-        letters the user never typed are marked as wrong.
+        This marks only the target's trailing letters that were not typed.
+
+        Args:
+            word_index: Index of the submitted target word.
+            typed_word: Text entered by the user for that word.
         """
-        word = self.list_graph[word_index]
-        start = self.word_starts[word_index]
+        word = self.typing_test.list_words[word_index]
+        start = self.typing_test.word_starts[word_index]
 
         for i in range(len(typed_word), len(word)):
             char_pos = start + i
             self.show_text.tag_add("wrong", f"1.{char_pos}", f"1.{char_pos + 1}")
 
-    def highlight_letters(self):
-        """Color the typed letters according to whether they match the target word.
+    def highlight_letters(self, word_index: int, typed_word: str) -> None:
+        """Color typed characters according to whether they match the target.
 
-        Uses ``entry_word``, ``current_word``, and ``start_pos`` to add the
-        ``correct`` or ``wrong`` text tag to each typed character in the
-        displayed paragraph. Characters beyond the target word are ignored so
-        they cannot be highlighted over the next word.
-
-        Returns:
-            None.
+        Args:
+            word_index: Index of the target word in the paragraph.
+            typed_word: Text entered by the user for that word.
         """
-        # Restrict highlighting to the current letter
-        # following words when the user types extra characters.
-        for i, ch in enumerate(self.entry_word[:len(self.current_word)]):
-            char_pos = self.start_pos + i
-            if ch == self.current_word[i]:
-                self.show_text.tag_add("correct", f"1.{char_pos}", f"1.{char_pos + 1}")
-            else:
-                self.show_text.tag_add("wrong", f"1.{char_pos}", f"1.{char_pos + 1}")
+        target = self.typing_test.list_words[word_index]
+        start = self.typing_test.word_starts[word_index]
 
-    def key_press(self, event):
+        # Clear old coloring for this word before applying the new one.
+        self.show_text.tag_remove("correct", f"1.{start}", f"1.{start + len(target)}")
+        self.show_text.tag_remove("wrong", f"1.{start}", f"1.{start + len(target)}")
+
+        # Only color letters inside the word; extra letters would spill over.
+        for i, ch in enumerate(typed_word[:len(target)]):
+            char_pos = start + i
+            tag = "correct" if ch == target[i] else "wrong"
+            self.show_text.tag_add(tag, f"1.{char_pos}", f"1.{char_pos + 1}")
+
+    def key_press(self, event: Event) -> None:
         """Handle key events during typing.
 
         The method checks the current input word, starts the timer on first
         character entry, advances to the next word on space, updates highlight
         colors, and ends the challenge when all words are processed.
         """
-        if self.finished or self.word_index >= len(self.list_graph):
+        if self.finished or self.typing_test.is_finished:
             return
 
-        # Get the raw input from the text box and trim spaces for comparison.
         raw_text = self.entry.get()
         self.entry_word = raw_text.strip()
-        self.current_word = self.list_graph[self.word_index]
-
-        # Start a countdown only after the first alphanumeric character is typed.
         if event.char.isalnum() and self.timer is None:
             self.start_timer()
 
-        # When the user presses the space key, the current word is evaluated.
-        # Detect a space anywhere in the text (not only at the end), so fast typists
-        # who press the next letter before releasing the space key are handled.
-        if " " in raw_text:
-            # Split at the first space: the part before it is the finished word,
-            # and anything after it belongs to the next word.
-            typed_word, _, remainder = raw_text.partition(" ")
-            remainder = remainder.lstrip()
+        result = self.typing_test.check_word(raw_text)
+        if result is not None:
+            typed_word, is_correct, remainder = result
 
-            # Keep any characters typed after the space inside the entry field,
-            # so they become the beginning of the next word instead of being lost.
+            # Keep characters typed after the space as the start of the next word.
             self.entry.delete(0, "end")
             self.entry.insert(0, remainder)
 
-            # A space with no word before it: ignore it and wait for real input.
-            if not typed_word:
+            # A space with no word before it: ignore it.
+            if is_correct is None:
                 return
+            finished_index = self.typing_test.word_index - 1
 
-            # Compare the finished word with the expected word and record the result.
-            if typed_word == self.current_word:
-                self.correct_word_list.append(self.current_word)
-            else:
-                self.wrong_word_list.append(typed_word)
-                # Mark the letters the user left out in red.
-                self.highlight_missing_letters(self.word_index, typed_word)
-            # Move on to the next word in the paragraph.
-            self.word_index += 1
+            # Color the completed word, including its final character.
+            self.highlight_letters(finished_index, typed_word)
 
-            # All words are done: end the test and show the speed.
-            if self.word_index >= len(self.list_graph):
+            if not is_correct:
+                self.highlight_missing_letters(finished_index, typed_word)
+
+            if self.typing_test.is_finished:
                 self.calculate_speed()
                 return
 
-            # Update the state for the new word, including any early characters
-            # that were already typed for it.
-            self.current_word = self.list_graph[self.word_index]
+            # Keep characters typed after the separating space as the next input.
             self.entry_word = remainder
 
-        # Calculate the text position of the current word in the paragraph.
-        self.start_pos, end_pos = self.highlight_current_word()
+        # Highlight the active word and color the letters typed so far.
+        self.highlight_current_word()
+        self.highlight_letters(self.typing_test.word_index, self.entry_word)
 
-        # Apply per-character highlighting to show correct and incorrect letters.
-        self.show_text.tag_remove("correct", f"1.{self.start_pos}", f"1.{end_pos}")
-        self.show_text.tag_remove("wrong", f"1.{self.start_pos}", f"1.{end_pos}")
-        #highlighting to the current letter
-        self.highlight_letters()
-
-    def create_widgets(self):
+    def create_widgets(self) -> None:
         """Create and arrange all visual components of the typing screen."""
-
         self.lbl = ctk.CTkLabel(
             master=self,
             text="Typing Speed Test",
@@ -268,13 +209,13 @@ class Screen(ctk.CTk):
             height=200,
             wrap="word",
         )
-        self.show_text.insert("1.0", self.text_graph)
+        self.show_text.insert("1.0", self.typing_test.text_words)
         self.show_text.configure(state="disabled")
         self.show_text.grid(row=2, column=0, sticky="nsew", padx=(50, 0), pady=10, columnspan=2)
 
         # Text styling for highlighting correct, incorrect, and current words.
         self.show_text.tag_config("background", background="green")
-        self.show_text.tag_config("correct", foreground="white")
+        self.show_text.tag_config("correct", foreground="orange")
         self.show_text.tag_config("wrong", foreground="red")
 
         # Input field where the user types the sentence/words.
@@ -300,23 +241,23 @@ class Screen(ctk.CTk):
         )
         self.btn.grid(row=5, column=1, padx=(0, 300), pady=10)
 
-    def cancel_timer(self):
+    def cancel_timer(self) -> None:
         """Stop the active timer if it exists."""
         if self.timer is not None:
             self.after_cancel(self.timer)
             self.timer = None
 
-    def format_time(self, seconds):
+    def format_time(self, seconds: float) -> str:
         """Return a number of seconds formatted as MM:SS."""
         minutes, secs = divmod(int(seconds), 60)
         return f"{minutes:02d}:{secs:02d}"
 
-    def show_remaining(self, seconds):
+    def show_remaining(self, seconds: float) -> None:
         """Show the remaining time, in red when it is nearly over."""
         color = WARNING_COLOR if seconds <= WARNING_SECONDS else self.timer_default_color
         self.timer_lbl.configure(text=self.format_time(seconds), text_color=color)
 
-    def on_minutes_change(self, event):
+    def on_minutes_change(self, event: Event) -> None:
         """Refresh the countdown label when the minutes field is edited.
 
         Only applies before the test starts, and ignores empty or invalid text
@@ -329,7 +270,7 @@ class Screen(ctk.CTk):
         if text.isdigit():
             self.show_remaining(max(MIN_MINUTES, int(text)) * 60)
 
-    def read_minutes(self):
+    def read_minutes(self) -> int:
         """Read the duration from the minutes entry, falling back to the default."""
         try:
             return max(MIN_MINUTES, int(self.min_entry.get()))
@@ -338,7 +279,7 @@ class Screen(ctk.CTk):
             self.min_entry.insert(0, str(DEFAULT_MINUTES))
             return DEFAULT_MINUTES
 
-    def tick(self):
+    def tick(self) -> None:
         """Update the countdown label and end the test when time runs out."""
         elapsed = time.monotonic() - self.start_time
         remaining = self.test_minutes * 60 - elapsed
@@ -352,19 +293,19 @@ class Screen(ctk.CTk):
         self.show_remaining(math.ceil(remaining))
         self.timer = self.after(200, self.tick)
 
-    def start_timer(self):
+    def start_timer(self) -> None:
         """Start the countdown and record the start time."""
         self.test_minutes = self.read_minutes()
         self.start_time = time.monotonic()
         self.tick()
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset the challenge and generate a fresh paragraph."""
         self.finished = False
-        self.load_new_text()
+        self.typing_test.reset()
         self.show_text.configure(state="normal")
         self.show_text.delete("1.0", "end")
-        self.show_text.insert("1.0", self.text_graph)
+        self.show_text.insert("1.0", self.typing_test.text_words)
         for tag in ("correct", "wrong", "background"):
             self.show_text.tag_remove(tag, "1.0", "end")
         self.show_text.configure(state="disabled")
@@ -373,11 +314,7 @@ class Screen(ctk.CTk):
         self.entry.configure(placeholder_text=ENTRY_PLACEHOLDER)
 
         self.show_remaining(self.read_minutes() * 60)
-
-        self.correct_word_list = []
-        self.wrong_word_list = []
         self.cancel_timer()
-        self.word_index = 0
         self.highlight_current_word()
         # Return keyboard focus to the entry so the user can type immediately.
         self.entry.focus()

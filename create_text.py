@@ -1,25 +1,21 @@
-"""Generate sample paragraphs for typing-speed tests.
-
-The :class:`Paragraph` class wraps Faker's paragraph generator so the GUI can
-request fresh practice text whenever a test starts or is reset.
-"""
+"""Generate sample paragraphs for typing-speed tests using Faker."""
 
 from faker import Faker
 
-class Paragraph:
-    """Create generated paragraph text for the typing challenge."""
+SENTENCES_PER_TEXT = 10
+
+
+class CreateText:
+    """Generate the practice paragraph shown during a typing test."""
 
     def __init__(self):
-        """Initialize a Faker instance used to generate paragraphs."""
+        """Create the Faker instance used to generate paragraph text."""
         self.faker = Faker()
 
-    def create_paragraph(self, num_of_sentences):
-        """Return a randomly generated paragraph.
-
-        Args:
-            num_of_sentences: Number of sentences to include in the paragraph.
+    def create_text(self) -> str:
+        """Return a generated paragraph containing the configured sentences.
 
         Returns:
-            Generated paragraph text as a string.
+            The generated paragraph as a string.
         """
-        return self.faker.paragraph(nb_sentences=num_of_sentences)
+        return self.faker.paragraph(nb_sentences=SENTENCES_PER_TEXT)
